@@ -26,6 +26,7 @@ use crate::{
     prelude::*,
     req::HttpClient,
     signature::{sign_l1_action, sign_typed_data},
+    ws::WsManager,
     BaseUrl, BulkCancelCloid, ClassTransfer, Error, ExchangeResponseStatus, SpotSend, SpotUser,
     VaultTransfer, Withdraw3,
 };
@@ -82,6 +83,7 @@ pub(crate) enum Actions {
     EvmUserModify(EvmUserModify),
     ScheduleCancel(ScheduleCancel),
     ClaimRewards(ClaimRewards),
+    Noop {},
 }
 
 impl Actions {
@@ -168,6 +170,90 @@ impl ExchangeClient {
             .map_err(|e| Error::JsonParse(e.to_string()))?;
         debug!("Response: {output}");
         serde_json::from_str(output).map_err(|e| Error::JsonParse(e.to_string()))
+    }
+
+    async fn ws_post(
+        &self,
+        ws: &WsManager,
+        action: serde_json::Value,
+        signature: Signature,
+        nonce: u64,
+    ) -> Result<ExchangeResponseStatus> {
+        let exchange_payload = ExchangePayload {
+            action,
+            signature,
+            nonce,
+            vault_address: self.vault_address,
+        };
+        let payload =
+            serde_json::to_value(&exchange_payload).map_err(|e| Error::JsonParse(e.to_string()))?;
+
+        let ws_response = ws.post(payload, nonce).await?;
+
+        let response = &ws_response.data.response;
+        match response.get("type").and_then(|t| t.as_str()) {
+            Some("error") => {
+                let msg = response
+                    .get("payload")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("unknown WS error");
+                Ok(ExchangeResponseStatus::Err(msg.to_string()))
+            }
+            _ => {
+                let payload = response
+                    .get("payload")
+                    .ok_or_else(|| Error::JsonParse("missing payload in WS response".to_string()))?;
+                serde_json::from_value(payload.clone())
+                    .map_err(|e| Error::JsonParse(e.to_string()))
+            }
+        }
+    }
+
+    pub async fn ws_order(
+        &self,
+        ws: &WsManager,
+        order: ClientOrderRequest,
+        wallet: Option<&PrivateKeySigner>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+        let timestamp = next_nonce();
+
+        let order = order.convert(&self.coin_to_asset)?;
+        let action = Actions::Order(BulkOrder {
+            orders: vec![order],
+            grouping: "na".to_string(),
+            builder: None,
+        });
+        let connection_id = action.hash(timestamp, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+        self.ws_post(ws, action, signature, timestamp).await
+    }
+
+    pub async fn ws_modify(
+        &self,
+        ws: &WsManager,
+        modify: ClientModifyRequest,
+        wallet: Option<&PrivateKeySigner>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+        let timestamp = next_nonce();
+
+        let transformed = ModifyRequest {
+            oid: modify.oid,
+            order: modify.order.convert(&self.coin_to_asset)?,
+        };
+        let action = Actions::BatchModify(BulkModify {
+            modifies: vec![transformed],
+        });
+        let connection_id = action.hash(timestamp, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+        self.ws_post(ws, action, signature, timestamp).await
     }
 
     pub async fn enable_big_blocks(
@@ -866,6 +952,111 @@ impl ExchangeClient {
         let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
 
         self.post(action, signature, timestamp).await
+    }
+
+    pub async fn noop(
+        &self,
+        nonce: u64,
+        wallet: Option<&PrivateKeySigner>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+
+        let action = Actions::Noop {};
+        let connection_id = action.hash(nonce, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.post(action, signature, nonce).await
+    }
+
+    pub async fn ws_noop(
+        &self,
+        ws: &WsManager,
+        nonce: u64,
+        wallet: Option<&PrivateKeySigner>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+
+        let action = Actions::Noop {};
+        let connection_id = action.hash(nonce, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.ws_post(ws, action, signature, nonce).await
+    }
+
+    pub async fn ws_cancel(
+        &self,
+        ws: &WsManager,
+        cancel: ClientCancelRequest,
+        wallet: Option<&PrivateKeySigner>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+        let timestamp = next_nonce();
+
+        let &asset = self
+            .coin_to_asset
+            .get(&cancel.asset)
+            .ok_or(Error::AssetNotFound)?;
+        let action = Actions::Cancel(BulkCancel {
+            cancels: vec![CancelRequest {
+                asset,
+                oid: cancel.oid,
+            }],
+        });
+        let connection_id = action.hash(timestamp, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.ws_post(ws, action, signature, timestamp).await
+    }
+
+    pub async fn order_with_nonce(
+        &self,
+        order: ClientOrderRequest,
+        nonce: u64,
+        wallet: Option<&PrivateKeySigner>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+
+        let order = order.convert(&self.coin_to_asset)?;
+        let action = Actions::Order(BulkOrder {
+            orders: vec![order],
+            grouping: "na".to_string(),
+            builder: None,
+        });
+        let connection_id = action.hash(nonce, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.post(action, signature, nonce).await
+    }
+
+    pub async fn ws_order_with_nonce(
+        &self,
+        ws: &WsManager,
+        order: ClientOrderRequest,
+        nonce: u64,
+        wallet: Option<&PrivateKeySigner>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+
+        let order = order.convert(&self.coin_to_asset)?;
+        let action = Actions::Order(BulkOrder {
+            orders: vec![order],
+            grouping: "na".to_string(),
+            builder: None,
+        });
+        let connection_id = action.hash(nonce, self.vault_address)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.ws_post(ws, action, signature, nonce).await
     }
 }
 

@@ -35,6 +35,7 @@ pub struct UserFeesResponse {
     pub user_spot_add_rate: String,
     #[serde(default)]
     pub trial: Option<TrialInfo>,
+    #[serde(default)]
     pub fee_trial_reward: String,
     pub next_trial_available_timestamp: Option<u64>,
     pub staking_link: Option<StakingLink>,

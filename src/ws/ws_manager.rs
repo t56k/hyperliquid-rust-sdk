@@ -46,7 +46,7 @@ struct SubscriptionData {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct WsManager {
+pub struct WsManager {
     stop_flag: Arc<AtomicBool>,
     writer: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, protocol::Message>>>,
     subscriptions: Arc<Mutex<HashMap<String, Vec<SubscriptionData>>>>,
@@ -97,7 +97,7 @@ pub enum Message {
     ActiveAssetData(ActiveAssetData),
     ActiveSpotAssetCtx(ActiveSpotAssetCtx),
     Bbo(Bbo),
-    Error(SubscriptionError),
+    SubscriptionError(SubscriptionError),
     Pong,
     #[serde(rename = "error")]
     Error(serde_json::Value),
@@ -318,7 +318,7 @@ impl WsManager {
             | Message::Post(_) => Ok(String::default()),
             Message::NoData => Ok("".to_string()),
             Message::HyperliquidError(err) => Ok(format!("hyperliquid error: {err:?}")),
-            Message::Error(err) => {
+            Message::SubscriptionError(err) => {
                 let error_str = err.data.to_string();
                 let identifier = error_str
                     .split("Invalid subscription ")
@@ -338,60 +338,46 @@ impl WsManager {
         >,
     ) -> Result<()> {
         match data {
-<<<<<<< HEAD
-            Ok(data) => {
-                match data.into_text() {
-                    Ok(data) => {
-                        if !data.starts_with('{') {
-                            return Ok(());
-                        }
-                        match serde_json::from_str::<serde_json::Value>(&data) {
-                            Ok(json_value) => match WsResponse::try_from(json_value.clone()) {
-                                Ok(response) => match response {
-                                    WsResponse::Post(post_response) => {
-                                        let id = post_response.data.id;
-                                        let mut pending = pending_responses.lock().await;
-                                        if let Some(sender) = pending.remove(&id) {
-                                            if sender.send(json_value).is_err() {
-                                                warn!("Failed to send POST response - receiver dropped");
-                                            }
-                                            return Ok(());
-                                        }
-                                    }
-                                    WsResponse::Error(error_response) => {
-                                        let id = error_response.data.id;
-                                        let mut pending = pending_responses.lock().await;
-                                        if let Some(sender) = pending.remove(&id) {
-                                            if sender.send(json_value).is_err() {
-                                                warn!("Failed to send error response - receiver dropped");
-                                            }
-                                            return Ok(());
-                                        }
-                                    }
-                                    WsResponse::Other(value) => {
-                                        if let Some(id) = value.get("id").and_then(|v| v.as_u64()) {
-                                            let mut pending = pending_responses.lock().await;
-                                            if let Some(sender) = pending.remove(&id) {
-                                                if sender.send(value).is_err() {
-                                                    warn!("Failed to send response - receiver dropped");
-                                                }
-                                                return Ok(());
-                                            }
-                                        }
-                                    }
-                                },
-                                Err(e) => {
-                                    warn!("Failed to parse response: {}", e);
-                                }
-                            },
-                            Err(e) => {
-                                warn!("Failed to parse JSON: {}", e);
             Ok(data) => match data.into_text() {
                 Ok(data) => {
                     if !data.starts_with('{') {
                         return Ok(());
                     }
 
+                    // Try to handle POST responses first (PR #164)
+                    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&data) {
+                        if let Ok(response) = WsResponse::try_from(json_value.clone()) {
+                            match response {
+                                WsResponse::Post(post_response) => {
+                                    let id = post_response.data.id;
+                                    let mut pending = pending_responses.lock().await;
+                                    if let Some(sender) = pending.remove(&id) {
+                                        let _ = sender.send(json_value);
+                                    }
+                                    return Ok(());
+                                }
+                                WsResponse::Error(error_response) => {
+                                    let id = error_response.data.id;
+                                    let mut pending = pending_responses.lock().await;
+                                    if let Some(sender) = pending.remove(&id) {
+                                        let _ = sender.send(json_value);
+                                    }
+                                    return Ok(());
+                                }
+                                WsResponse::Other(value) => {
+                                    if let Some(id) = value.get("id").and_then(|v| v.as_u64()) {
+                                        let mut pending = pending_responses.lock().await;
+                                        if let Some(sender) = pending.remove(&id) {
+                                            let _ = sender.send(value);
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Normal subscription dispatch
                     let message = serde_json::from_str::<Message>(&data)
                         .map_err(|e| Error::JsonParse(e.to_string()))?;
 
@@ -412,39 +398,18 @@ impl WsManager {
                                 res = Err(e);
                             }
                         }
-
-                        let message = serde_json::from_str::<Message>(&data)
-                            .map_err(|e| Error::JsonParse(e.to_string()))?;
-                        let identifier = WsManager::get_identifier(&message)?;
-                        if identifier.is_empty() {
-                            return Ok(());
-                        }
-
-                        let mut subscriptions = subscriptions.lock().await;
-                        let mut res = Ok(());
-                        if let Some(subscription_datas) = subscriptions.get_mut(&identifier) {
-                            for subscription_data in subscription_datas {
-                                if let Err(e) = subscription_data
-                                    .sending_channel
-                                    .send(message.clone())
-                                    .map_err(|e| Error::WsSend(e.to_string()))
-                                {
-                                    res = Err(e);
-                                }
-                            }
-                        }
-                        res
                     }
-                    Err(err) => {
-                        let error = Error::ReaderTextConversion(err.to_string());
-                        Ok(WsManager::send_to_all_subscriptions(
-                            subscriptions,
-                            Message::HyperliquidError(error.to_string()),
-                        )
-                        .await?)
-                    }
+                    res
                 }
-            }
+                Err(err) => {
+                    let error = Error::ReaderTextConversion(err.to_string());
+                    Ok(WsManager::send_to_all_subscriptions(
+                        subscriptions,
+                        Message::HyperliquidError(error.to_string()),
+                    )
+                    .await?)
+                }
+            },
             Err(err) => {
                 let error = Error::GenericReader(err.to_string());
                 Ok(WsManager::send_to_all_subscriptions(
@@ -590,7 +555,7 @@ impl WsManager {
         Ok(())
     }
     pub async fn post(
-        &mut self,
+        &self,
         payload: serde_json::Value,
         nonce: u64,
     ) -> Result<WsPostResponse> {

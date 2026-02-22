@@ -1,9 +1,8 @@
-use serde::{Deserialize, Serialize};
-use crate::helpers::{hex_string_to_uuid, uuid_to_hex_string};
-
-use super::{order::OrderRequest, ClientOrderRequest};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
+
+use crate::helpers::{hex_string_to_uuid, uuid_to_hex_string};
+use super::{order::OrderRequest, ClientOrderRequest};
 
 #[derive(Debug, Clone)]
 pub enum OidOrCloid {
@@ -59,7 +58,7 @@ impl<'de> Deserialize<'de> for OidOrCloid {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClientModifyRequest {
     pub oid: OidOrCloid,
     pub order: ClientOrderRequest,

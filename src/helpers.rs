@@ -6,13 +6,15 @@ use log::info;
 use uuid::Uuid;
 
 use crate::consts::*;
+use crate::errors::Error;
+use crate::prelude::*;
 
 fn now_timestamp_ms() -> u64 {
     let now = Utc::now();
     now.timestamp_millis() as u64
 }
 
-pub(crate) fn next_nonce() -> u64 {
+pub fn next_nonce() -> u64 {
     let nonce = CUR_NONCE.fetch_add(1, Ordering::Relaxed);
     let now_ms = now_timestamp_ms();
     if nonce > now_ms + 1000 {
@@ -63,14 +65,6 @@ pub(crate) fn hex_string_to_uuid(hex_string: &str) -> Result<Uuid> {
             "Invalid hex string: {hex_string}"
         )))
     }
-}
-
-pub(crate) fn generate_random_key() -> Result<[u8; 32]> {
-    let mut arr = [0u8; 32];
-    thread_rng()
-        .try_fill(&mut arr[..])
-        .map_err(|e| Error::RandGen(e.to_string()))?;
-    Ok(arr)
 }
 
 pub fn truncate_float(float: f64, decimals: u32, round_up: bool) -> f64 {
