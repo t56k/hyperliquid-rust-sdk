@@ -53,6 +53,26 @@ pub(crate) fn uuid_to_hex_string(uuid: Uuid) -> String {
     format!("0x{hex_string}")
 }
 
+pub(crate) fn hex_string_to_uuid(hex_string: &str) -> Result<Uuid> {
+    if let Some(hex_string) = hex_string.strip_prefix("0x") {
+        Ok(Uuid::from_u128(
+            u128::from_str_radix(hex_string, 16).unwrap(),
+        ))
+    } else {
+        Err(Error::JsonParse(format!(
+            "Invalid hex string: {hex_string}"
+        )))
+    }
+}
+
+pub(crate) fn generate_random_key() -> Result<[u8; 32]> {
+    let mut arr = [0u8; 32];
+    thread_rng()
+        .try_fill(&mut arr[..])
+        .map_err(|e| Error::RandGen(e.to_string()))?;
+    Ok(arr)
+}
+
 pub fn truncate_float(float: f64, decimals: u32, round_up: bool) -> f64 {
     let pow10 = 10i64.pow(decimals) as f64;
     let mut float = (float * pow10) as u64;

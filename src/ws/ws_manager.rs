@@ -36,14 +36,17 @@ use crate::{
     WebData2,
 };
 
+use super::SubscriptionError;
+
 #[derive(Debug)]
 struct SubscriptionData {
     sending_channel: UnboundedSender<Message>,
     subscription_id: u32,
     id: String,
 }
-#[derive(Debug)]
-pub struct WsManager {
+
+#[derive(Debug, Clone)]
+pub(crate) struct WsManager {
     stop_flag: Arc<AtomicBool>,
     writer: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, protocol::Message>>>,
     subscriptions: Arc<Mutex<HashMap<String, Vec<SubscriptionData>>>>,
@@ -94,6 +97,7 @@ pub enum Message {
     ActiveAssetData(ActiveAssetData),
     ActiveSpotAssetCtx(ActiveSpotAssetCtx),
     Bbo(Bbo),
+    Error(SubscriptionError),
     Pong,
     #[serde(rename = "error")]
     Error(serde_json::Value),
@@ -314,6 +318,15 @@ impl WsManager {
             | Message::Post(_) => Ok(String::default()),
             Message::NoData => Ok("".to_string()),
             Message::HyperliquidError(err) => Ok(format!("hyperliquid error: {err:?}")),
+            Message::Error(err) => {
+                let error_str = err.data.to_string();
+                let identifier = error_str
+                    .split("Invalid subscription ")
+                    .nth(1)
+                    .unwrap_or("Invalid subscription")
+                    .to_string();
+                Ok(identifier)
+            }
         }
     }
 
@@ -325,6 +338,7 @@ impl WsManager {
         >,
     ) -> Result<()> {
         match data {
+<<<<<<< HEAD
             Ok(data) => {
                 match data.into_text() {
                     Ok(data) => {
@@ -372,6 +386,30 @@ impl WsManager {
                             },
                             Err(e) => {
                                 warn!("Failed to parse JSON: {}", e);
+            Ok(data) => match data.into_text() {
+                Ok(data) => {
+                    if !data.starts_with('{') {
+                        return Ok(());
+                    }
+
+                    let message = serde_json::from_str::<Message>(&data)
+                        .map_err(|e| Error::JsonParse(e.to_string()))?;
+
+                    let identifier = WsManager::get_identifier(&message)?;
+                    if identifier.is_empty() {
+                        return Ok(());
+                    }
+
+                    let mut subscriptions = subscriptions.lock().await;
+                    let mut res = Ok(());
+                    if let Some(subscription_datas) = subscriptions.get_mut(&identifier) {
+                        for subscription_data in subscription_datas {
+                            if let Err(e) = subscription_data
+                                .sending_channel
+                                .send(message.clone())
+                                .map_err(|e| Error::WsSend(e.to_string()))
+                            {
+                                res = Err(e);
                             }
                         }
 
@@ -478,15 +516,11 @@ impl WsManager {
     ) -> Result<u32> {
         let mut subscriptions = self.subscriptions.lock().await;
 
-        let identifier_entry = if let Subscription::UserEvents { user: _ } =
-            serde_json::from_str::<Subscription>(&identifier)
-                .map_err(|e| Error::JsonParse(e.to_string()))?
-        {
+        let subscription = serde_json::from_str::<Subscription>(&identifier)
+            .map_err(|e| Error::JsonParse(e.to_string()))?;
+        let identifier_entry = if let Subscription::UserEvents { user: _ } = subscription {
             "userEvents".to_string()
-        } else if let Subscription::OrderUpdates { user: _ } =
-            serde_json::from_str::<Subscription>(&identifier)
-                .map_err(|e| Error::JsonParse(e.to_string()))?
-        {
+        } else if let Subscription::OrderUpdates { user: _ } = subscription {
             "orderUpdates".to_string()
         } else {
             identifier.clone()

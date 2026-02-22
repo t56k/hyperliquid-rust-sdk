@@ -30,7 +30,7 @@ use crate::{
     VaultTransfer, Withdraw3,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExchangeClient {
     pub http_client: HttpClient,
     pub wallet: PrivateKeySigner,
@@ -139,7 +139,7 @@ impl ExchangeClient {
         })
     }
 
-    async fn post(
+    pub async fn post(
         &self,
         action: serde_json::Value,
         signature: Signature,
