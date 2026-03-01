@@ -26,6 +26,8 @@ pub struct CandleSnapshotRequest {
     interval: String,
     start_time: u64,
     end_time: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dex: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -55,7 +57,10 @@ pub enum InfoRequest {
         oid: u64,
     },
     Meta,
-    MetaAndAssetCtxs,
+    MetaAndAssetCtxs {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
     SpotMeta,
     SpotMetaAndAssetCtxs,
     AllMids,
@@ -212,8 +217,11 @@ impl InfoClient {
         self.send_info_request(input).await
     }
 
-    pub async fn meta_and_asset_contexts(&self) -> Result<(Meta, Vec<AssetContext>)> {
-        let input = InfoRequest::MetaAndAssetCtxs;
+    pub async fn meta_and_asset_contexts(
+        &self,
+        dex: impl Into<Option<String>>,
+    ) -> Result<(Meta, Vec<AssetContext>)> {
+        let input = InfoRequest::MetaAndAssetCtxs { dex: dex.into() };
         self.send_info_request(input).await
     }
 
@@ -282,12 +290,24 @@ impl InfoClient {
         start_time: u64,
         end_time: u64,
     ) -> Result<Vec<CandlesSnapshotResponse>> {
+        self.candles_snapshot_with_dex(coin, interval, start_time, end_time, None).await
+    }
+
+    pub async fn candles_snapshot_with_dex(
+        &self,
+        coin: String,
+        interval: String,
+        start_time: u64,
+        end_time: u64,
+        dex: Option<String>,
+    ) -> Result<Vec<CandlesSnapshotResponse>> {
         let input = InfoRequest::CandleSnapshot {
             req: CandleSnapshotRequest {
                 coin,
                 interval,
                 start_time,
                 end_time,
+                dex,
             },
         };
         self.send_info_request(input).await

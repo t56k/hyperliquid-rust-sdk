@@ -95,7 +95,7 @@ async fn meta_example(info_client: &InfoClient) {
 async fn meta_and_asset_contexts_example(info_client: &InfoClient) {
     info!(
         "Meta and asset contexts: {:?}",
-        info_client.meta_and_asset_contexts().await.unwrap()
+        info_client.meta_and_asset_contexts(None).await.unwrap()
     );
 }
 

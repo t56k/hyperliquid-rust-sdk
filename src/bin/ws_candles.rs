@@ -17,6 +17,7 @@ async fn main() {
             Subscription::Candle {
                 coin: "ETH".to_string(),
                 interval: "1m".to_string(),
+                dex: Some("xyz".to_string()),
             },
             sender,
         )
